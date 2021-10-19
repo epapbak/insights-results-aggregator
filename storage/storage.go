@@ -401,12 +401,12 @@ func (storage DBStorage) ListOfClustersForOrgSpecificRule(
 	query := `SELECT cluster_id FROM recommendation ` + whereClause + ` ORDER BY cluster_id;`
 
 	rows, err := storage.connection.Query(query, orgID, ruleID)
+	defer closeRows(rows)
 
 	err = types.ConvertDBError(err, orgID)
 	if err != nil {
 		return results, err
 	}
-	defer closeRows(rows)
 
 	var (
 		clusterName types.ClusterName
