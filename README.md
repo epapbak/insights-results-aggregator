@@ -11,7 +11,7 @@
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/RedHatInsights/insights-results-aggregator)
 [![License](https://img.shields.io/badge/license-Apache-blue)](https://github.com/RedHatInsights/insights-results-aggregator/blob/master/LICENSE)
 
-Aggregator service for insights results
+AAggregator service for insights results
 
 <!-- vim-markdown-toc GFM -->
 
