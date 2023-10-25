@@ -151,7 +151,7 @@ func MustGetPostgresStorage(tb testing.TB, init bool) (storage.Storage, func()) 
 	storageConf.PGUsername = postgres
 
 	connString := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s sslmode=disable",
+		"host=%s port=%d user=%s password=%s dbname=aggregator sslmode=disable",
 		storageConf.PGHost, storageConf.PGPort, storageConf.PGUsername, storageConf.PGPassword,
 	)
 
