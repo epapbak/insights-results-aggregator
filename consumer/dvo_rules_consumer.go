@@ -35,7 +35,7 @@ import (
 	"github.com/RedHatInsights/insights-results-aggregator/storage"
 )
 
-// NewOCPRulesConsumer constructs new implementation of Consumer interface
-func NewOCPRulesConsumer(brokerCfg broker.Configuration, storage storage.OCPRecommendationsStorage) (*KafkaConsumer, error) {
-	return NewKafkaConsumer(brokerCfg, storage, OCPRulesProcessor{})
+// NewDVORulesConsumer constructs new implementation of Consumer interface
+func NewDVORulesConsumer(brokerCfg broker.Configuration, storage storage.OCPRecommendationsStorage) (*KafkaConsumer, error) {
+	return NewKafkaConsumer(brokerCfg, storage, DVORulesProcessor{})
 }

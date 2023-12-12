@@ -24,3 +24,9 @@ services:
       - POSTGRESQL_PASSWORD=password
       - POSTGRESQL_ADMIN_PASSWORD=postgres
       - POSTGRESQL_DATABASE=aggregator
+    healthcheck:
+      test: ["CMD", "pg_isready"]
+      interval: 2s
+      timeout: 2s
+      retries: 4
+      start_period: 2s

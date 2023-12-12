@@ -46,6 +46,10 @@ var (
 	}
 )
 
+type MessageProcessor interface {
+	ProcessMessage(consumer *KafkaConsumer, msg *sarama.ConsumerMessage) (types.RequestID, incomingMessage, error)
+}
+
 // Report represents report send in a message consumed from any broker
 type Report map[string]*json.RawMessage
 
@@ -131,7 +135,7 @@ var currentSchemaVersion = types.AllowedVersions{
 // 2:53PM DBG processing of message took '0.005895183' seconds offset=8 partition=0 topic=ccx.ocp.results
 // 2:53PM WRN request ID is missing, null or empty Operation=TrackPayload
 // 2:53PM INF Message consumed duration=6 offset=8
-func (consumer *OCPRulesConsumer) HandleMessage(msg *sarama.ConsumerMessage) error {
+func (consumer *KafkaConsumer) HandleMessage(msg *sarama.ConsumerMessage) error {
 	log.Info().
 		Int64(offsetKey, msg.Offset).
 		Int32(partitionKey, msg.Partition).
@@ -142,7 +146,7 @@ func (consumer *OCPRulesConsumer) HandleMessage(msg *sarama.ConsumerMessage) err
 	metrics.ConsumedMessages.Inc()
 
 	startTime := time.Now()
-	requestID, message, err := consumer.processMessage(msg)
+	requestID, message, err := consumer.MessageProcessor.ProcessMessage(consumer, msg)
 	timeAfterProcessingMessage := time.Now()
 	messageProcessingDuration := timeAfterProcessingMessage.Sub(startTime).Seconds()
 
@@ -183,7 +187,7 @@ func (consumer *OCPRulesConsumer) HandleMessage(msg *sarama.ConsumerMessage) err
 }
 
 // updatePayloadTracker
-func (consumer OCPRulesConsumer) updatePayloadTracker(
+func (consumer KafkaConsumer) updatePayloadTracker(
 	requestID types.RequestID,
 	timestamp time.Time,
 	orgID *types.OrgID,
@@ -199,7 +203,7 @@ func (consumer OCPRulesConsumer) updatePayloadTracker(
 }
 
 // sendDeadLetter - sends unprocessed message to dead letter queue
-func (consumer OCPRulesConsumer) sendDeadLetter(msg *sarama.ConsumerMessage) {
+func (consumer KafkaConsumer) sendDeadLetter(msg *sarama.ConsumerMessage) {
 	if consumer.deadLetterProducer != nil {
 		if err := consumer.deadLetterProducer.SendDeadLetter(msg); err != nil {
 			log.Error().Err(err).Msg("Failed to load message to dead letter queue")
@@ -208,7 +212,7 @@ func (consumer OCPRulesConsumer) sendDeadLetter(msg *sarama.ConsumerMessage) {
 }
 
 // checkMessageVersion - verifies incoming data's version is expected
-func checkMessageVersion(consumer *OCPRulesConsumer, message *incomingMessage, msg *sarama.ConsumerMessage) {
+func checkMessageVersion(consumer *KafkaConsumer, message *incomingMessage, msg *sarama.ConsumerMessage) {
 	if _, ok := currentSchemaVersion[message.Version]; !ok {
 		warning := fmt.Sprintf("Received data with unexpected version %d.", message.Version)
 		logMessageWarning(consumer, msg, message, warning)
@@ -216,7 +220,7 @@ func checkMessageVersion(consumer *OCPRulesConsumer, message *incomingMessage, m
 }
 
 // checkMessageOrgInAllowList - checks up incoming data's OrganizationID against allowed orgs list
-func checkMessageOrgInAllowList(consumer *OCPRulesConsumer, message *incomingMessage, msg *sarama.ConsumerMessage) (bool, string) {
+func checkMessageOrgInAllowList(consumer *KafkaConsumer, message *incomingMessage, msg *sarama.ConsumerMessage) (bool, string) {
 	if consumer.Configuration.OrgAllowlistEnabled {
 		logMessageInfo(consumer, msg, message, "Checking organization ID against allow list")
 
@@ -232,7 +236,7 @@ func checkMessageOrgInAllowList(consumer *OCPRulesConsumer, message *incomingMes
 	return true, ""
 }
 
-func (consumer *OCPRulesConsumer) writeRecommendations(
+func (consumer *KafkaConsumer) writeRecommendations(
 	msg *sarama.ConsumerMessage, message incomingMessage, reportAsBytes []byte,
 ) (time.Time, error) {
 	err := consumer.Storage.WriteRecommendationsForCluster(
@@ -250,7 +254,7 @@ func (consumer *OCPRulesConsumer) writeRecommendations(
 	return tStored, nil
 }
 
-func (consumer *OCPRulesConsumer) writeInfoReport(
+func (consumer *KafkaConsumer) writeInfoReport(
 	msg *sarama.ConsumerMessage, message incomingMessage, infoStoredAtTime time.Time,
 ) error {
 	// it is expected that message.ParsedInfo contains at least one item:
@@ -273,13 +277,13 @@ func (consumer *OCPRulesConsumer) writeInfoReport(
 	return nil
 }
 
-func (consumer *OCPRulesConsumer) logMsgForFurtherAnalysis(msg *sarama.ConsumerMessage) {
+func (consumer *KafkaConsumer) logMsgForFurtherAnalysis(msg *sarama.ConsumerMessage) {
 	if consumer.Configuration.DisplayMessageWithWrongStructure {
 		log.Info().Str("unparsed message", string(msg.Value)).Msg("Message for further analysis")
 	}
 }
 
-func (consumer *OCPRulesConsumer) logReportStructureError(err error, msg *sarama.ConsumerMessage) {
+func (consumer *KafkaConsumer) logReportStructureError(err error, msg *sarama.ConsumerMessage) {
 	if consumer.Configuration.DisplayMessageWithWrongStructure {
 		log.Err(err).Str("unparsed message", string(msg.Value)).Msg(improperIncomeMessageError)
 	} else {
@@ -287,7 +291,7 @@ func (consumer *OCPRulesConsumer) logReportStructureError(err error, msg *sarama
 	}
 }
 
-func (consumer *OCPRulesConsumer) shouldProcess(consumed *sarama.ConsumerMessage, parsed *incomingMessage) error {
+func (consumer *KafkaConsumer) shouldProcess(consumed *sarama.ConsumerMessage, parsed *incomingMessage) error {
 	err := checkReportStructure(*parsed.Report)
 	if err != nil {
 		consumer.logReportStructureError(err, consumed)
@@ -296,7 +300,7 @@ func (consumer *OCPRulesConsumer) shouldProcess(consumed *sarama.ConsumerMessage
 	return nil
 }
 
-func (consumer *OCPRulesConsumer) retrieveLastCheckedTime(msg *sarama.ConsumerMessage, parsedMsg *incomingMessage) (time.Time, error) {
+func (consumer *KafkaConsumer) retrieveLastCheckedTime(msg *sarama.ConsumerMessage, parsedMsg *incomingMessage) (time.Time, error) {
 	lastCheckedTime, err := time.Parse(time.RFC3339Nano, parsedMsg.LastChecked)
 	if err != nil {
 		logMessageError(consumer, msg, parsedMsg, "Error parsing date from message", err)
@@ -314,101 +318,8 @@ func (consumer *OCPRulesConsumer) retrieveLastCheckedTime(msg *sarama.ConsumerMe
 	return lastCheckedTime, nil
 }
 
-// processMessage processes an incoming message
-func (consumer *OCPRulesConsumer) processMessage(msg *sarama.ConsumerMessage) (types.RequestID, incomingMessage, error) {
-	tStart := time.Now()
-
-	log.Info().Int(offsetKey, int(msg.Offset)).Str(topicKey, consumer.Configuration.Topic).Str(groupKey, consumer.Configuration.Group).Msg("Consumed")
-
-	message, err := consumer.parseMessage(msg, tStart)
-	if err != nil {
-		if err == types.ErrEmptyReport {
-			logMessageInfo(consumer, msg, &message, "This message has an empty report and will not be processed further")
-			metrics.SkippedEmptyReports.Inc()
-			return message.RequestID, message, nil
-		}
-		return message.RequestID, message, err
-	}
-	logMessageInfo(consumer, msg, &message, "Read")
-	tRead := time.Now()
-
-	checkMessageVersion(consumer, &message, msg)
-
-	if ok, cause := checkMessageOrgInAllowList(consumer, &message, msg); !ok {
-		err := errors.New(cause)
-		logMessageError(consumer, msg, &message, cause, err)
-		return message.RequestID, message, err
-	}
-
-	tAllowlisted := time.Now()
-
-	logMessageDebug(consumer, msg, &message, "Marshalled")
-	tMarshalled := time.Now()
-
-	lastCheckedTime, err := consumer.retrieveLastCheckedTime(msg, &message)
-	if err != nil {
-		return message.RequestID, message, err
-	}
-	tTimeCheck := time.Now()
-
-	// timestamp when the report is about to be written into database
-	storedAtTime := time.Now()
-
-	reportAsBytes, err := json.Marshal(*message.Report)
-	if err != nil {
-		logMessageError(consumer, msg, &message, "Error marshalling report", err)
-		return message.RequestID, message, err
-	}
-
-	err = consumer.Storage.WriteReportForCluster(
-		*message.Organization,
-		*message.ClusterName,
-		types.ClusterReport(reportAsBytes),
-		message.ParsedHits,
-		lastCheckedTime,
-		message.Metadata.GatheredAt,
-		storedAtTime,
-		message.RequestID,
-	)
-	if err == types.ErrOldReport {
-		logMessageInfo(consumer, msg, &message, "Skipping because a more recent report already exists for this cluster")
-		return message.RequestID, message, nil
-	} else if err != nil {
-		logMessageError(consumer, msg, &message, "Error writing report to database", err)
-		return message.RequestID, message, err
-	}
-	logMessageDebug(consumer, msg, &message, "Stored report")
-	tStored := time.Now()
-
-	tRecommendationsStored, err := consumer.writeRecommendations(msg, message, reportAsBytes)
-	if err != nil {
-		return message.RequestID, message, err
-	}
-
-	// rule hits has been stored into database - time to log all these great info
-	logClusterInfo(&message)
-
-	infoStoredAtTime := time.Now()
-	if err := consumer.writeInfoReport(msg, message, infoStoredAtTime); err != nil {
-		return message.RequestID, message, err
-	}
-	infoStored := time.Now()
-
-	// log durations for every message consumption steps
-	logDuration(tStart, tRead, msg.Offset, "read")
-	logDuration(tRead, tAllowlisted, msg.Offset, "org_filtering")
-	logDuration(tAllowlisted, tMarshalled, msg.Offset, "marshalling")
-	logDuration(tMarshalled, tTimeCheck, msg.Offset, "time_check")
-	logDuration(tTimeCheck, tStored, msg.Offset, "db_store_report")
-	logDuration(tStored, tRecommendationsStored, msg.Offset, "db_store_recommendations")
-	logDuration(infoStoredAtTime, infoStored, msg.Offset, "db_store_info_report")
-
-	// message has been parsed and stored into storage
-	return message.RequestID, message, nil
-}
-
 // organizationAllowed checks whether the given organization is on allow list or not
-func organizationAllowed(consumer *OCPRulesConsumer, orgID types.OrgID) bool {
+func organizationAllowed(consumer *KafkaConsumer, orgID types.OrgID) bool {
 	allowList := consumer.Configuration.OrgAllowlist
 	if allowList == nil {
 		return false
@@ -540,7 +451,7 @@ func parseReportContent(message *incomingMessage) error {
 	return nil
 }
 
-func (consumer *OCPRulesConsumer) parseMessage(msg *sarama.ConsumerMessage, tStart time.Time) (incomingMessage, error) {
+func (consumer *KafkaConsumer) parseMessage(msg *sarama.ConsumerMessage, tStart time.Time) (incomingMessage, error) {
 	message, err := deserializeMessage(msg.Value)
 	if err != nil {
 		consumer.logMsgForFurtherAnalysis(msg)

@@ -32,8 +32,9 @@ import (
 )
 
 func benchmarkProcessingMessage(b *testing.B, s storage.OCPRecommendationsStorage, messageProducer func() string) {
-	kafkaConsumer := &consumer.OCPRulesConsumer{
-		Storage: s,
+	kafkaConsumer := &consumer.KafkaConsumer{
+		Storage:          s,
+		MessageProcessor: consumer.OCPRulesProcessor{},
 	}
 
 	b.ResetTimer()
@@ -149,8 +150,9 @@ func BenchmarkKafkaConsumer_ProcessMessage_RealMessages(b *testing.B) {
 			}
 			defer ira_helpers.MustCloseStorage(b, benchStorage)
 
-			kafkaConsumer := &consumer.OCPRulesConsumer{
-				Storage: benchStorage,
+			kafkaConsumer := &consumer.KafkaConsumer{
+				Storage:          benchStorage,
+				MessageProcessor: consumer.OCPRulesProcessor{},
 			}
 
 			b.ResetTimer()
