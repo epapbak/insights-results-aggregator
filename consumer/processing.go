@@ -16,12 +16,10 @@ package consumer
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/Shopify/sarama"
-	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
 	"github.com/RedHatInsights/insights-results-aggregator/metrics"
@@ -47,7 +45,10 @@ var (
 )
 
 type MessageProcessor interface {
+	DeserializeMessage(messageValue []byte) (incomingMessage, error)
+	ParseMessage(consumer *KafkaConsumer, msg *sarama.ConsumerMessage) (incomingMessage, error)
 	ProcessMessage(consumer *KafkaConsumer, msg *sarama.ConsumerMessage) (types.RequestID, incomingMessage, error)
+	ShouldProcess(consumer *KafkaConsumer, consumed *sarama.ConsumerMessage, parsed *incomingMessage) error
 }
 
 // Report represents report send in a message consumed from any broker
@@ -328,148 +329,4 @@ func organizationAllowed(consumer *KafkaConsumer, orgID types.OrgID) bool {
 	orgAllowed := allowList.Contains(orgID)
 
 	return orgAllowed
-}
-
-func verifySystemAttributeIsEmpty(r Report) bool {
-	var s system
-	if err := json.Unmarshal(*r[reportAttributeSystem], &s); err != nil {
-		return false
-	}
-	if s.Hostname != "" {
-		return false
-	}
-	return true
-}
-
-// isReportWithEmptyAttributes checks if the report is empty, or if the attributes
-// expected in the report, minus the analysis_metadata, are empty.
-// If this function returns true, this report will not be processed further as it is
-// PROBABLY the result of an archive that was not processed by insights-core.
-// see https://github.com/RedHatInsights/insights-results-aggregator/issues/1834
-func isReportWithEmptyAttributes(r Report) bool {
-	// Create attribute checkers for each attribute
-	for attr, attrData := range r {
-		// we don't care about the analysis_metadata attribute
-		if attr == reportAttributeMetadata {
-			continue
-		}
-		// special handling for the system attribute, as it comes with data when empty
-		if attr == reportAttributeSystem {
-			if !verifySystemAttributeIsEmpty(r) {
-				return false
-			}
-			continue
-		}
-		// Check if this attribute of the report is empty
-		checker := JSONAttributeChecker{data: *attrData}
-		if !checker.IsEmpty() {
-			return false
-		}
-	}
-	return true
-}
-
-// checkReportStructure tests if the report has correct structure
-func checkReportStructure(r Report) error {
-	// the structure is not well-defined yet, so all we should do is to check if all keys are there
-
-	// 'skips' key is now optional, we should not expect it anymore:
-	// https://github.com/RedHatInsights/insights-results-aggregator/issues/1206
-	keysNotFound := make([]string, 0, numberOfExpectedKeysInReport)
-	keysFound := 0
-	// check if the structure contains all expected keys
-	for _, expectedKey := range expectedKeysInReport {
-		_, found := r[expectedKey]
-		if !found {
-			keysNotFound = append(keysNotFound, expectedKey)
-		} else {
-			keysFound++
-		}
-	}
-
-	if keysFound == numberOfExpectedKeysInReport {
-		return nil
-	}
-
-	// empty reports mean that this message should not be processed further
-	isEmpty := len(r) == 0 || isReportWithEmptyAttributes(r)
-	if isEmpty {
-		log.Debug().Msg("Empty report or report with only empty attributes. Processing of this message will be skipped.")
-		return types.ErrEmptyReport
-	}
-
-	// report is not empty, and some keys have not been found -> malformed
-	if len(keysNotFound) != 0 {
-		return fmt.Errorf("improper report structure, missing key(s) with name '%v'", keysNotFound)
-	}
-
-	return nil
-}
-
-// deserializeMessage tries to parse incoming message and read all required attributes from it
-func deserializeMessage(messageValue []byte) (incomingMessage, error) {
-	var deserialized incomingMessage
-
-	err := json.Unmarshal(messageValue, &deserialized)
-	if err != nil {
-		return deserialized, err
-	}
-
-	if deserialized.Organization == nil {
-		return deserialized, errors.New("missing required attribute 'OrgID'")
-	}
-	if deserialized.ClusterName == nil {
-		return deserialized, errors.New("missing required attribute 'ClusterName'")
-	}
-	if deserialized.Report == nil {
-		return deserialized, errors.New("missing required attribute 'Report'")
-	}
-
-	_, err = uuid.Parse(string(*deserialized.ClusterName))
-
-	if err != nil {
-		return deserialized, errors.New("cluster name is not a UUID")
-	}
-	return deserialized, nil
-}
-
-// parseReportContent verifies the content of the Report structure and parses it into
-// the relevant parts of the incomingMessage structure
-func parseReportContent(message *incomingMessage) error {
-	err := json.Unmarshal(*((*message.Report)[reportAttributeReports]), &message.ParsedHits)
-	if err != nil {
-		return err
-	}
-
-	// it is expected that message.ParsedInfo contains at least one item:
-	// result from special INFO rule containing cluster version that is
-	// used just in external data pipeline
-	err = json.Unmarshal(*((*message.Report)[reportAttributeInfo]), &message.ParsedInfo)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (consumer *KafkaConsumer) parseMessage(msg *sarama.ConsumerMessage, tStart time.Time) (incomingMessage, error) {
-	message, err := deserializeMessage(msg.Value)
-	if err != nil {
-		consumer.logMsgForFurtherAnalysis(msg)
-		logUnparsedMessageError(consumer, msg, "Error parsing message from Kafka", err)
-		return message, err
-	}
-
-	consumer.updatePayloadTracker(message.RequestID, tStart, message.Organization, message.Account, producer.StatusReceived)
-
-	if err := consumer.shouldProcess(msg, &message); err != nil {
-		return message, err
-	}
-
-	err = parseReportContent(&message)
-	if err != nil {
-		consumer.logReportStructureError(err, msg)
-		return message, err
-	}
-
-	return message, nil
 }

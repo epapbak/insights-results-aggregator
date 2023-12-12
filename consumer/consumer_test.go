@@ -17,7 +17,6 @@ limitations under the License.
 package consumer_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,13 +25,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RedHatInsights/insights-operator-utils/tests/saramahelpers"
-	"github.com/RedHatInsights/insights-results-aggregator/producer"
-	ira_helpers "github.com/RedHatInsights/insights-results-aggregator/tests/helpers"
-	zerolog_log "github.com/rs/zerolog/log"
-
 	"github.com/RedHatInsights/insights-operator-utils/tests/helpers"
 	"github.com/RedHatInsights/insights-results-aggregator-data/testdata"
+	"github.com/RedHatInsights/insights-results-aggregator/producer"
+	ira_helpers "github.com/RedHatInsights/insights-results-aggregator/tests/helpers"
 	"github.com/Shopify/sarama"
 	mapset "github.com/deckarep/golang-set"
 	"github.com/rs/zerolog"
@@ -40,7 +36,6 @@ import (
 
 	"github.com/RedHatInsights/insights-results-aggregator/broker"
 	"github.com/RedHatInsights/insights-results-aggregator/consumer"
-	"github.com/RedHatInsights/insights-results-aggregator/storage"
 	"github.com/RedHatInsights/insights-results-aggregator/types"
 )
 
@@ -97,29 +92,6 @@ func consumerProcessMessage(mockConsumer consumer.Consumer, message string) erro
 
 func mustConsumerProcessMessage(t testing.TB, mockConsumer consumer.Consumer, message string) {
 	helpers.FailOnError(t, consumerProcessMessage(mockConsumer, message))
-}
-
-func createOCPConsumer(brokerCfg broker.Configuration, mockStorage storage.OCPRecommendationsStorage) *consumer.KafkaConsumer {
-	return &consumer.KafkaConsumer{
-		Configuration:    brokerCfg,
-		Storage:          mockStorage,
-		MessageProcessor: consumer.OCPRulesProcessor{},
-	}
-}
-
-func dummyOCPConsumer(s storage.OCPRecommendationsStorage, allowlist bool) consumer.Consumer {
-	brokerCfg := broker.Configuration{
-		Address: "localhost:1234",
-		Topic:   "topic",
-		Group:   "group",
-	}
-	if allowlist {
-		brokerCfg.OrgAllowlist = mapset.NewSetWith(types.OrgID(1))
-		brokerCfg.OrgAllowlistEnabled = true
-	} else {
-		brokerCfg.OrgAllowlistEnabled = false
-	}
-	return createOCPConsumer(brokerCfg, s)
 }
 
 func createConsumerMessage(report string) string {
@@ -183,52 +155,6 @@ func TestKafkaConsumer_New(t *testing.T) {
 	}, testCaseTimeLimit)
 }
 
-func TestKafkaConsumer_ConsumeClaim(t *testing.T) {
-	mockStorage, closer := ira_helpers.MustGetMockStorage(t, true)
-	defer closer()
-
-	kafkaConsumer := createOCPConsumer(broker.Configuration{}, mockStorage)
-
-	mockConsumerGroupSession := &saramahelpers.MockConsumerGroupSession{}
-	mockConsumerGroupClaim := saramahelpers.NewMockConsumerGroupClaim(nil)
-
-	err := kafkaConsumer.ConsumeClaim(mockConsumerGroupSession, mockConsumerGroupClaim)
-	helpers.FailOnError(t, err)
-}
-
-func TestKafkaConsumer_ConsumeClaim_DBError(t *testing.T) {
-	buf := new(bytes.Buffer)
-	zerolog_log.Logger = zerolog.New(buf)
-
-	mockStorage, closer := ira_helpers.MustGetMockStorage(t, true)
-	closer()
-
-	kafkaConsumer := createOCPConsumer(broker.Configuration{}, mockStorage)
-
-	mockConsumerGroupSession := &saramahelpers.MockConsumerGroupSession{}
-	mockConsumerGroupClaim := saramahelpers.NewMockConsumerGroupClaim(nil)
-
-	err := kafkaConsumer.ConsumeClaim(mockConsumerGroupSession, mockConsumerGroupClaim)
-	helpers.FailOnError(t, err)
-
-	assert.Contains(t, buf.String(), "starting messages loop")
-}
-
-func TestKafkaConsumer_ConsumeClaim_OKMessage(t *testing.T) {
-	mockStorage, closer := ira_helpers.MustGetMockStorage(t, true)
-	defer closer()
-
-	kafkaConsumer := createOCPConsumer(broker.Configuration{}, mockStorage)
-
-	mockConsumerGroupSession := &saramahelpers.MockConsumerGroupSession{}
-	mockConsumerGroupClaim := saramahelpers.NewMockConsumerGroupClaim([]*sarama.ConsumerMessage{
-		saramahelpers.StringToSaramaConsumerMessage(testdata.ConsumerMessage),
-	})
-
-	err := kafkaConsumer.ConsumeClaim(mockConsumerGroupSession, mockConsumerGroupClaim)
-	helpers.FailOnError(t, err)
-}
-
 func TestKafkaConsumer_SetupCleanup(t *testing.T) {
 	mockStorage, closer := ira_helpers.MustGetMockStorage(t, false)
 	defer closer()
@@ -272,11 +198,11 @@ func TestKafkaConsumer_NewDeadLetterProducer_Error(t *testing.T) {
 
 	mockBroker.SetHandlerByMap(ira_helpers.GetHandlersMapForMockConsumer(t, mockBroker, testTopicName))
 
-	_, err := consumer.NewOCPRulesConsumer(broker.Configuration{
+	_, err := consumer.NewKafkaConsumer(broker.Configuration{
 		Address: mockBroker.Addr(),
 		Topic:   testTopicName,
 		Enabled: true,
-	}, mockStorage)
+	}, mockStorage, nil)
 
 	assert.EqualError(t, err, "error happened")
 }
@@ -298,11 +224,11 @@ func TestKafkaConsumer_NewPayloadTrackerProducer_Error(t *testing.T) {
 
 	mockBroker.SetHandlerByMap(ira_helpers.GetHandlersMapForMockConsumer(t, mockBroker, testTopicName))
 
-	_, err := consumer.NewOCPRulesConsumer(broker.Configuration{
+	_, err := consumer.NewKafkaConsumer(broker.Configuration{
 		Address: mockBroker.Addr(),
 		Topic:   testTopicName,
 		Enabled: true,
-	}, mockStorage)
+	}, mockStorage, nil)
 
 	assert.EqualError(t, err, "error happened")
 }

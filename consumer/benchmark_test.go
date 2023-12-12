@@ -93,6 +93,7 @@ func getMessagesFromDir(b *testing.B, dataDir string) []string {
 	helpers.FailOnError(b, err)
 
 	var messages []string
+	processor := consumer.OCPRulesProcessor{}
 
 	for _, file := range files {
 		if file.Type().IsRegular() {
@@ -103,7 +104,7 @@ func getMessagesFromDir(b *testing.B, dataDir string) []string {
 				helpers.FailOnError(b, err)
 
 				zerolog.SetGlobalLevel(zerolog.Disabled)
-				parsedMessage, err := consumer.DeserializeMessage(fileBytes)
+				parsedMessage, err := processor.DeserializeMessage(fileBytes)
 				zerolog.SetGlobalLevel(zerolog.WarnLevel)
 				if err != nil {
 					log.Warn().Msgf("skipping file %+v because it has bad structure", file.Name())

@@ -20,6 +20,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/RedHatInsights/insights-operator-utils/tests/saramahelpers"
+	"github.com/RedHatInsights/insights-results-aggregator/storage"
 	"testing"
 	"time"
 
@@ -42,21 +44,47 @@ func init() {
 	zerolog.SetGlobalLevel(zerolog.WarnLevel)
 }
 
+func createOCPConsumer(brokerCfg broker.Configuration, mockStorage storage.OCPRecommendationsStorage) *consumer.KafkaConsumer {
+	return &consumer.KafkaConsumer{
+		Configuration:    brokerCfg,
+		Storage:          mockStorage,
+		MessageProcessor: consumer.OCPRulesProcessor{},
+	}
+}
+
+func dummyOCPConsumer(s storage.OCPRecommendationsStorage, allowlist bool) consumer.Consumer {
+	brokerCfg := broker.Configuration{
+		Address: "localhost:1234",
+		Topic:   "topic",
+		Group:   "group",
+	}
+	if allowlist {
+		brokerCfg.OrgAllowlist = mapset.NewSetWith(types.OrgID(1))
+		brokerCfg.OrgAllowlistEnabled = true
+	} else {
+		brokerCfg.OrgAllowlistEnabled = false
+	}
+	return createOCPConsumer(brokerCfg, s)
+}
+
 func TestDeserializeEmptyMessage(t *testing.T) {
-	_, err := consumer.DeserializeMessage([]byte(""))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	_, err := c.MessageProcessor.DeserializeMessage([]byte(""))
 	assert.EqualError(t, err, "unexpected end of JSON input")
 }
 
 func TestDeserializeMessageWithWrongContent(t *testing.T) {
 	const message = `{"this":"is", "not":"expected content"}`
-	_, err := consumer.DeserializeMessage([]byte(message))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	_, err := c.MessageProcessor.DeserializeMessage([]byte(message))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "missing required attribute")
 }
 
 func TestDeserializeMessageWithImproperJSON(t *testing.T) {
 	const message = `"this_is_not_json_dude"`
-	_, err := consumer.DeserializeMessage([]byte(message))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	_, err := c.MessageProcessor.DeserializeMessage([]byte(message))
 	assert.EqualError(
 		t,
 		err,
@@ -80,14 +108,16 @@ func TestDeserializeMessageWithImproperReport(t *testing.T) {
 			"info": []
 	}
 	}`
-	message, err := consumer.DeserializeMessage([]byte(consumerMessage))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	message, err := c.MessageProcessor.DeserializeMessage([]byte(consumerMessage))
 	helpers.FailOnError(t, err)
 	assert.Equal(t, types.OrgID(1), *message.Organization)
 	assert.Equal(t, testdata.ClusterName, *message.ClusterName)
 }
 
 func TestDeserializeProperMessage(t *testing.T) {
-	message, err := consumer.DeserializeMessage([]byte(testdata.ConsumerMessage))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	message, err := c.MessageProcessor.DeserializeMessage([]byte(testdata.ConsumerMessage))
 	helpers.FailOnError(t, err)
 	assert.Equal(t, types.OrgID(1), *message.Organization)
 	assert.Equal(t, testdata.ClusterName, *message.ClusterName)
@@ -99,7 +129,8 @@ func TestDeserializeMessageWrongClusterName(t *testing.T) {
 		"ClusterName": "this is not a UUID",
 		"Report": ` + testdata.ConsumerReport + `
 	}`
-	_, err := consumer.DeserializeMessage([]byte(message))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	_, err := c.MessageProcessor.DeserializeMessage([]byte(message))
 	assert.EqualError(t, err, "cluster name is not a UUID")
 }
 
@@ -108,7 +139,8 @@ func TestDeserializeMessageWithoutOrgID(t *testing.T) {
 		"ClusterName": "` + string(testdata.ClusterName) + `",
 		"Report": ` + testdata.ConsumerReport + `
 	}`
-	_, err := consumer.DeserializeMessage([]byte(message))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	_, err := c.MessageProcessor.DeserializeMessage([]byte(message))
 	assert.EqualError(t, err, "missing required attribute 'OrgID'")
 }
 
@@ -117,7 +149,8 @@ func TestDeserializeMessageWithoutClusterName(t *testing.T) {
 		"OrgID": ` + fmt.Sprint(testdata.OrgID) + `,
 		"Report": ` + testdata.ConsumerReport + `
 	}`
-	_, err := consumer.DeserializeMessage([]byte(message))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	_, err := c.MessageProcessor.DeserializeMessage([]byte(message))
 	assert.EqualError(t, err, "missing required attribute 'ClusterName'")
 }
 
@@ -126,7 +159,8 @@ func TestDeserializeMessageWithoutReport(t *testing.T) {
 		"OrgID": ` + fmt.Sprint(testdata.OrgID) + `,
 		"ClusterName": "` + string(testdata.ClusterName) + `"
 	}`
-	_, err := consumer.DeserializeMessage([]byte(message))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	_, err := c.MessageProcessor.DeserializeMessage([]byte(message))
 	assert.EqualError(t, err, "missing required attribute 'Report'")
 }
 
@@ -136,7 +170,8 @@ func TestDeserializeMessageWithEmptyReport(t *testing.T) {
 		"ClusterName": "` + string(testdata.ClusterName) + `",
 		"Report": {}
 	}`
-	_, err := consumer.DeserializeMessage([]byte(message))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	_, err := c.MessageProcessor.DeserializeMessage([]byte(message))
 	assert.Nil(t, err, "deserializeMessage should not return error for empty report")
 }
 
@@ -146,7 +181,8 @@ func TestDeserializeMessageNullReport(t *testing.T) {
 		"ClusterName": "` + string(testdata.ClusterName) + `",
 		"Report": null
 	}`
-	_, err := consumer.DeserializeMessage([]byte(message))
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
+	_, err := c.MessageProcessor.DeserializeMessage([]byte(message))
 	assert.EqualError(t, err, "missing required attribute 'Report'")
 }
 
@@ -276,7 +312,7 @@ func TestCheckReportStructureReportWithItems(t *testing.T) {
 }
 
 func TestParseReportContentEmptyReportsAttribute(t *testing.T) {
-	deserialized, err := consumer.DeserializeMessage([]byte(testdata.ConsumerMessage))
+	deserialized, err := consumer.OCPRulesProcessor{}.DeserializeMessage([]byte(testdata.ConsumerMessage))
 	assert.Nil(t, err, "deserializeMessage should not return error for this message")
 
 	err = consumer.ParseReportContent(&deserialized)
@@ -290,7 +326,7 @@ func TestParseReportContentValidReport(t *testing.T) {
 		"Report":` + string(testdata.Report2Rules) + `
 	}`
 
-	deserialized, err := consumer.DeserializeMessage([]byte(message))
+	deserialized, err := consumer.OCPRulesProcessor{}.DeserializeMessage([]byte(message))
 	assert.Nil(t, err, "deserializeMessage should not return error for this message")
 
 	err = consumer.ParseReportContent(&deserialized)
@@ -298,91 +334,91 @@ func TestParseReportContentValidReport(t *testing.T) {
 }
 
 func TestParseEmptyMessage(t *testing.T) {
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	message := sarama.ConsumerMessage{}
-	_, err := consumer.ParseMessage(&c, &message)
+	_, err := c.MessageProcessor.ParseMessage(&c, &message)
 	assert.EqualError(t, err, "unexpected end of JSON input")
 }
 
 func TestParseMessageWithWrongContent(t *testing.T) {
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	message := sarama.ConsumerMessage{Value: []byte(`{"this":"is", "not":"expected content"}`)}
-	_, err := consumer.ParseMessage(&c, &message)
+	_, err := c.MessageProcessor.ParseMessage(&c, &message)
 	assert.EqualError(t, err, "missing required attribute 'OrgID'")
 }
 
 func TestParseProperMessageWrongClusterName(t *testing.T) {
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	data := `{
 		"OrgID": ` + fmt.Sprint(testdata.OrgID) + `,
 		"ClusterName": "this is not a UUID",
 		"Report": ` + testdata.ConsumerReport + `
 	}`
 	message := sarama.ConsumerMessage{Value: []byte(data)}
-	_, err := consumer.ParseMessage(&c, &message)
+	_, err := c.MessageProcessor.ParseMessage(&c, &message)
 	assert.EqualError(t, err, "cluster name is not a UUID")
 }
 
 func TestParseMessageWithoutOrgID(t *testing.T) {
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	data := `{
 		"ClusterName": "` + string(testdata.ClusterName) + `",
 		"Report": ` + testdata.ConsumerReport + `
 	}`
 	message := sarama.ConsumerMessage{Value: []byte(data)}
-	_, err := consumer.ParseMessage(&c, &message)
+	_, err := c.MessageProcessor.ParseMessage(&c, &message)
 	assert.EqualError(t, err, "missing required attribute 'OrgID'")
 }
 
 func TestParseMessageWithoutClusterName(t *testing.T) {
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	data := `{
 		"OrgID": ` + fmt.Sprint(testdata.OrgID) + `,
 		"Report": ` + testdata.ConsumerReport + `
 	}`
 	message := sarama.ConsumerMessage{Value: []byte(data)}
-	_, err := consumer.ParseMessage(&c, &message)
+	_, err := c.MessageProcessor.ParseMessage(&c, &message)
 	assert.EqualError(t, err, "missing required attribute 'ClusterName'")
 }
 
 func TestParseMessageWithoutReport(t *testing.T) {
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	data := `{
 		"OrgID": ` + fmt.Sprint(testdata.OrgID) + `,
 		"ClusterName": "` + string(testdata.ClusterName) + `"
 	}`
 	message := sarama.ConsumerMessage{Value: []byte(data)}
-	_, err := consumer.ParseMessage(&c, &message)
+	_, err := c.MessageProcessor.ParseMessage(&c, &message)
 	assert.EqualError(t, err, "missing required attribute 'Report'")
 }
 
 func TestParseMessageEmptyReport(t *testing.T) {
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	data := `{
 		"OrgID": ` + fmt.Sprint(testdata.OrgID) + `,
 		"ClusterName": "` + string(testdata.ClusterName) + `",
 		"Report": {}
 	}`
 	message := sarama.ConsumerMessage{Value: []byte(data)}
-	_, err := consumer.ParseMessage(&c, &message)
+	_, err := c.MessageProcessor.ParseMessage(&c, &message)
 	assert.EqualError(t, err, "empty report found in deserialized message")
 }
 func TestParseMessageNullReport(t *testing.T) {
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	data := `{
 		"OrgID": ` + fmt.Sprint(testdata.OrgID) + `,
 		"ClusterName": "` + string(testdata.ClusterName) + `",
 		"Report": null
 	}`
 	message := sarama.ConsumerMessage{Value: []byte(data)}
-	_, err := consumer.ParseMessage(&c, &message)
+	_, err := c.MessageProcessor.ParseMessage(&c, &message)
 	assert.EqualError(t, err, "missing required attribute 'Report'")
 }
 
 func TestParseMessageWithImproperJSON(t *testing.T) {
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	message := sarama.ConsumerMessage{Value: []byte(`"this_is_not_json_dude"`)}
-	_, err := consumer.ParseMessage(&c, &message)
+	_, err := c.MessageProcessor.ParseMessage(&c, &message)
 	assert.EqualError(t, err, "json: cannot unmarshal string into Go value of type consumer.incomingMessage")
 }
 
@@ -402,17 +438,17 @@ func TestParseMessageWithImproperReport(t *testing.T) {
 			"info": []
 		}
 	}`
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	message := sarama.ConsumerMessage{Value: []byte(data)}
 
-	_, err := consumer.ParseMessage(&c, &message)
+	_, err := c.MessageProcessor.ParseMessage(&c, &message)
 	assert.EqualError(t, err, "json: cannot unmarshal string into Go value of type []types.ReportItem")
 }
 
 func TestParseProperMessageReportWithEmptyAttributes(t *testing.T) {
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	message := sarama.ConsumerMessage{Value: []byte(testdata.ConsumerMessage)}
-	parsed, err := consumer.ParseMessage(&c, &message)
+	parsed, err := c.MessageProcessor.ParseMessage(&c, &message)
 	helpers.FailOnError(t, err, "empty report with all expected attributes present should be processed")
 
 	assert.Equal(t, types.OrgID(1), *parsed.Organization)
@@ -450,9 +486,9 @@ func TestParseProperMessageWithInfoReport(t *testing.T) {
 		]
 
 	}`
-	c := consumer.KafkaConsumer{}
+	c := consumer.KafkaConsumer{MessageProcessor: consumer.OCPRulesProcessor{}}
 	message := sarama.ConsumerMessage{Value: []byte(createConsumerMessage(consumerReport))}
-	parsed, err := consumer.ParseMessage(&c, &message)
+	parsed, err := c.MessageProcessor.ParseMessage(&c, &message)
 	helpers.FailOnError(t, err, "this message is valid and should be processed")
 	assert.Equal(t, types.OrgID(1), *parsed.Organization)
 	assert.Equal(t, testdata.ClusterName, *parsed.ClusterName)
@@ -867,4 +903,50 @@ func TestKafkaConsumer_ProcessMessage_MessageWithExpectedSchemaVersion(t *testin
 
 	assert.NotContains(t, buf.String(), "\"level\":\"warn\"")
 	assert.NotContains(t, buf.String(), "Received data with unexpected version")
+}
+
+func TestKafkaConsumer_ConsumeClaim(t *testing.T) {
+	mockStorage, closer := ira_helpers.MustGetMockStorage(t, true)
+	defer closer()
+
+	kafkaConsumer := createOCPConsumer(broker.Configuration{}, mockStorage)
+
+	mockConsumerGroupSession := &saramahelpers.MockConsumerGroupSession{}
+	mockConsumerGroupClaim := saramahelpers.NewMockConsumerGroupClaim(nil)
+
+	err := kafkaConsumer.ConsumeClaim(mockConsumerGroupSession, mockConsumerGroupClaim)
+	helpers.FailOnError(t, err)
+}
+
+func TestKafkaConsumer_ConsumeClaim_DBError(t *testing.T) {
+	buf := new(bytes.Buffer)
+	zerolog_log.Logger = zerolog.New(buf)
+
+	mockStorage, closer := ira_helpers.MustGetMockStorage(t, true)
+	closer()
+
+	kafkaConsumer := createOCPConsumer(broker.Configuration{}, mockStorage)
+
+	mockConsumerGroupSession := &saramahelpers.MockConsumerGroupSession{}
+	mockConsumerGroupClaim := saramahelpers.NewMockConsumerGroupClaim(nil)
+
+	err := kafkaConsumer.ConsumeClaim(mockConsumerGroupSession, mockConsumerGroupClaim)
+	helpers.FailOnError(t, err)
+
+	assert.Contains(t, buf.String(), "starting messages loop")
+}
+
+func TestKafkaConsumer_ConsumeClaim_OKMessage(t *testing.T) {
+	mockStorage, closer := ira_helpers.MustGetMockStorage(t, true)
+	defer closer()
+
+	kafkaConsumer := createOCPConsumer(broker.Configuration{}, mockStorage)
+
+	mockConsumerGroupSession := &saramahelpers.MockConsumerGroupSession{}
+	mockConsumerGroupClaim := saramahelpers.NewMockConsumerGroupClaim([]*sarama.ConsumerMessage{
+		saramahelpers.StringToSaramaConsumerMessage(testdata.ConsumerMessage),
+	})
+
+	err := kafkaConsumer.ConsumeClaim(mockConsumerGroupSession, mockConsumerGroupClaim)
+	helpers.FailOnError(t, err)
 }
